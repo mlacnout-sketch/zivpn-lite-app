@@ -88,7 +88,46 @@ class HysteriaService : VpnService() {
         File(cacheDir, "tun.sock").delete()
     }
 
+    // --- Helper Copy Binary ---
+    private fun getExecutablePath(name: String): String {
+        val file = File(filesDir, name)
+        // Jika file belum ada atau ukurannya 0, copy dari native lib
+        // Atau force copy setiap start untuk memastikan update
+        copyBinaryFromNative(name, file)
+        return file.absolutePath
+    }
+
+    private fun copyBinaryFromNative(libName: String, destFile: File) {
+        try {
+            // Binary di nativeLibraryDir namanya biasanya "libnama.so"
+            // Kita harus cari file aslinya.
+            val soName = if (libName.startsWith("lib") && libName.endsWith(".so")) libName else "lib$libName.so"
+            val sourceFile = File(nativeLibDir, soName)
+            
+            if (!sourceFile.exists()) {
+                Log.e(TAG, "Native library not found: ${sourceFile.absolutePath}")
+                return
+            }
+
+            sourceFile.inputStream().use { input ->
+                destFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            // Set executable permission
+            destFile.setExecutable(true, false)
+            Log.d(TAG, "Copied $libName to ${destFile.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to copy binary $libName", e)
+        }
+    }
+
     private fun startTun2Socks(serverIp: String) {
+        // Gunakan fungsi helper untuk path
+        val libtun = getExecutablePath("tun2socks")
+        // ... (sisanya sama)
+        // PENTING: Update cmd.add(libtun) di bawah
+        
         Log.d(TAG, "Starting Tun2Socks...")
         val builder = Builder()
         builder.setSession("ZIVPN Lite")
@@ -97,7 +136,6 @@ class HysteriaService : VpnService() {
         builder.addDnsServer("1.1.1.1")
         builder.setMtu(1500)
 
-        // Exclude Server IP agar tidak looping
         Log.d(TAG, "Calculating routes to exclude $serverIp")
         val routes = calculateRoutes(serverIp)
         for (route in routes) {
@@ -108,70 +146,44 @@ class HysteriaService : VpnService() {
         val tunFd = vpnInterface!!.fd
         Log.d(TAG, "VPN Interface established. FD: $tunFd")
 
-        val libtun = File(nativeLibDir, "libtun2socks.so").absolutePath
         val sockFile = File(cacheDir, "tun.sock")
-        
         if (sockFile.exists()) sockFile.delete()
-        // Kita biarkan tun2socks yang create socketnya (biasanya begitu untuk unix socket)
-        
-        // Command line arguments untuk tun2socks
-        // Asumsi binary tun2socks support syntax ini (seperti hev-socks5-tunnel atau badvpn)
+
         val cmd = ArrayList<String>()
-        cmd.add(libtun)
+        cmd.add(libtun) // Gunakan path dari filesDir
         cmd.add("--netif-ipaddr"); cmd.add(TUN2SOCKS_ADDRESS)
         cmd.add("--netif-netmask"); cmd.add("255.255.255.0")
         cmd.add("--socks-server-addr"); cmd.add("127.0.0.1:$LOAD_BALANCER_PORT")
         cmd.add("--tunmtu"); cmd.add("1500")
         cmd.add("--tunfd"); cmd.add(tunFd.toString())
         cmd.add("--sock"); cmd.add(sockFile.absolutePath)
-        cmd.add("--loglevel"); cmd.add("3") // 3=Info
+        cmd.add("--loglevel"); cmd.add("3")
         cmd.add("--udpgw-transparent-dns")
         cmd.add("--udpgw-remote-server-addr"); cmd.add("127.0.0.1:$LOAD_BALANCER_PORT")
 
         startBinary("tun2socks", cmd)
-
-        // Beri waktu sedikit untuk inisialisasi
+        
         try { Thread.sleep(500) } catch (e: InterruptedException) {}
-
-        // Kirim File Descriptor ke socket (Metode Ancillary Data)
-        Log.d(TAG, "Sending FD to Tun2Socks socket...")
+        
         if (!sendFdToSocket(vpnInterface!!, sockFile)) {
-            throw IOException("Failed to send FD to tun2socks socket!")
+             // Coba kirim lagi jika gagal pertama kali (Tun2Socks butuh waktu init)
+             Log.w(TAG, "Retrying send FD...")
+             Thread.sleep(1000)
+             if (!sendFdToSocket(vpnInterface!!, sockFile)) {
+                 throw IOException("Failed to send FD to tun2socks socket!")
+             }
         }
-        Log.d(TAG, "FD sent successfully.")
-    }
-
-    private fun sendFdToSocket(vpnInterface: ParcelFileDescriptor, socketFile: File): Boolean {
-        for (i in 0..10) { 
-            try {
-                if (!socketFile.exists()) {
-                    Thread.sleep(200)
-                    continue
-                }
-                val localSocket = LocalSocket()
-                localSocket.connect(LocalSocketAddress(socketFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM))
-                localSocket.setFileDescriptorsForSend(arrayOf(vpnInterface.fileDescriptor))
-                localSocket.outputStream.write(42) // Kirim dummy byte
-                localSocket.shutdownOutput()
-                localSocket.close()
-                return true
-            } catch (e: Exception) {
-                Log.w(TAG, "Retry $i sending FD: ${e.message}")
-                try { Thread.sleep(500) } catch (inter: InterruptedException) {}
-            }
-        }
-        return false
     }
 
     private fun startHysteriaCore(serverIp: String, pass: String) {
-        val libuz = File(nativeLibDir, "libuz.so").absolutePath
+        // Copy libuz -> hysteria
+        val libuz = getExecutablePath("uz") // Akan cari libuz.so, simpan sebagai 'uz'
         Log.d(TAG, "Starting 4 Hysteria Cores...")
 
         for (i in PORT_RANGES.indices) {
             val range = PORT_RANGES[i]
             val localPort = LOCAL_PORTS[i]
             
-            // Config JSON inline
             val configContent = """
             {
               "server": "$serverIp:$range",
@@ -197,7 +209,7 @@ class HysteriaService : VpnService() {
     }
 
     private fun startLoadBalancer() {
-        val libload = File(nativeLibDir, "libload.so").absolutePath
+        val libload = getExecutablePath("load") // Cari libload.so -> load
         Log.d(TAG, "Starting Load Balancer...")
 
         val cmd = ArrayList<String>()
