@@ -175,6 +175,28 @@ class HysteriaService : VpnService() {
         }
     }
 
+    private fun sendFdToSocket(vpnInterface: ParcelFileDescriptor, socketFile: File): Boolean {
+        for (i in 0..10) { 
+            try {
+                if (!socketFile.exists()) {
+                    Thread.sleep(200)
+                    continue
+                }
+                val localSocket = LocalSocket()
+                localSocket.connect(LocalSocketAddress(socketFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM))
+                localSocket.setFileDescriptorsForSend(arrayOf(vpnInterface.fileDescriptor))
+                localSocket.outputStream.write(42) // Kirim dummy byte
+                localSocket.shutdownOutput()
+                localSocket.close()
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "Retry $i sending FD: ${e.message}")
+                try { Thread.sleep(500) } catch (inter: InterruptedException) {}
+            }
+        }
+        return false
+    }
+
     private fun startHysteriaCore(serverIp: String, pass: String) {
         // Copy libuz -> hysteria
         val libuz = getExecutablePath("uz") // Akan cari libuz.so, simpan sebagai 'uz'
