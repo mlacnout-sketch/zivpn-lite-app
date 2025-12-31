@@ -19,25 +19,18 @@ class HysteriaService : VpnService() {
         const val TAG = "ZIVPN_Service"
         const val ACTION_CONNECT = "com.example.zivpnlite.CONNECT"
         const val ACTION_DISCONNECT = "com.example.zivpnlite.DISCONNECT"
+        const val ACTION_LOG = "com.example.zivpnlite.LOG"
+        const val EXTRA_LOG_MESSAGE = "log_message"
     }
 
-    private var vpnInterface: ParcelFileDescriptor? = null
-    // Thread-safe list untuk menyimpan proses yang berjalan
-    private var processList = CopyOnWriteArrayList<Process>()
-    
-    private val nativeLibDir: String by lazy {
-        applicationInfo.nativeLibraryDir
+    private fun logToUI(msg: String) {
+        Log.d(TAG, msg)
+        val intent = Intent(ACTION_LOG)
+        intent.putExtra(EXTRA_LOG_MESSAGE, msg)
+        sendBroadcast(intent)
     }
 
-    private val PORT_RANGES = listOf("6000-9500", "9501-13000", "13001-16500", "16501-19999")
-    // Menggunakan OBFS key default sesuai request, tapi bisa dioverride via Intent jika perlu
-    private var OBFS_KEY = "hu``hqb`c" 
-    private val LOCAL_PORTS = listOf(1080, 1081, 1082, 1083)
-    private val LOAD_BALANCER_PORT = 7777
-    private val VPN_ADDRESS = "10.0.1.1" // Gunakan private IP standar 10.x
-    private val VPN_ROUTE = "0.0.0.0" // Route semua traffic
-    private val TUN2SOCKS_ADDRESS = "10.0.1.2"
-
+    // Update logging usage below
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         if (action == ACTION_DISCONNECT) {
@@ -50,7 +43,7 @@ class HysteriaService : VpnService() {
         // Opsional: ambil obfs dari intent, fallback ke default
         OBFS_KEY = intent?.getStringExtra("OBFS") ?: OBFS_KEY
 
-        Log.i(TAG, "Starting VPN Service for Host: $host")
+        logToUI("Starting VPN Service for Host: $host")
 
         Thread {
             try {
@@ -59,9 +52,9 @@ class HysteriaService : VpnService() {
                 cleanUpFiles()
                 
                 // Resolve IP agar routing table tidak bingung dengan domain
-                Log.d(TAG, "Resolving IP for $host")
+                logToUI("Resolving IP for $host")
                 val resolvedIP = InetAddress.getByName(host).hostAddress
-                Log.d(TAG, "Resolved IP: $resolvedIP")
+                logToUI("Resolved IP: $resolvedIP")
                 
                 // 1. Start Hysteria Core (4 Instances)
                 startHysteriaCore(resolvedIP, pass)
@@ -72,8 +65,9 @@ class HysteriaService : VpnService() {
                 // 3. Start Tun2Socks
                 startTun2Socks(resolvedIP)
                 
-                Log.i(TAG, "All services started successfully.")
+                logToUI("All services started successfully.")
             } catch (e: Exception) {
+                logToUI("Error starting VPN: ${e.message}")
                 Log.e(TAG, "Error starting VPN", e)
                 stopVpn()
             }
@@ -105,7 +99,7 @@ class HysteriaService : VpnService() {
             val sourceFile = File(nativeLibDir, soName)
             
             if (!sourceFile.exists()) {
-                Log.e(TAG, "Native library not found: ${sourceFile.absolutePath}")
+                logToUI("Native library not found: ${sourceFile.absolutePath}")
                 return
             }
 
@@ -116,8 +110,9 @@ class HysteriaService : VpnService() {
             }
             // Set executable permission
             destFile.setExecutable(true, false)
-            Log.d(TAG, "Copied $libName to ${destFile.absolutePath}")
+            logToUI("Copied $libName to ${destFile.absolutePath}")
         } catch (e: Exception) {
+            logToUI("Failed to copy binary $libName: ${e.message}")
             Log.e(TAG, "Failed to copy binary $libName", e)
         }
     }
@@ -128,7 +123,7 @@ class HysteriaService : VpnService() {
         // ... (sisanya sama)
         // PENTING: Update cmd.add(libtun) di bawah
         
-        Log.d(TAG, "Starting Tun2Socks...")
+        logToUI("Starting Tun2Socks...")
         val builder = Builder()
         builder.setSession("ZIVPN Lite")
         builder.addAddress(VPN_ADDRESS, 24)
@@ -136,7 +131,7 @@ class HysteriaService : VpnService() {
         builder.addDnsServer("1.1.1.1")
         builder.setMtu(1500)
 
-        Log.d(TAG, "Calculating routes to exclude $serverIp")
+        logToUI("Calculating routes to exclude $serverIp")
         val routes = calculateRoutes(serverIp)
         for (route in routes) {
             builder.addRoute(route.address, route.prefix)
@@ -144,7 +139,7 @@ class HysteriaService : VpnService() {
         
         vpnInterface = builder.establish() ?: throw IOException("Failed to establish VPN Interface")
         val tunFd = vpnInterface!!.fd
-        Log.d(TAG, "VPN Interface established. FD: $tunFd")
+        logToUI("VPN Interface established. FD: $tunFd")
 
         val sockFile = File(cacheDir, "tun.sock")
         if (sockFile.exists()) sockFile.delete()
@@ -167,7 +162,7 @@ class HysteriaService : VpnService() {
         
         if (!sendFdToSocket(vpnInterface!!, sockFile)) {
              // Coba kirim lagi jika gagal pertama kali (Tun2Socks butuh waktu init)
-             Log.w(TAG, "Retrying send FD...")
+             logToUI("Retrying send FD...")
              Thread.sleep(1000)
              if (!sendFdToSocket(vpnInterface!!, sockFile)) {
                  throw IOException("Failed to send FD to tun2socks socket!")
@@ -190,7 +185,7 @@ class HysteriaService : VpnService() {
                 localSocket.close()
                 return true
             } catch (e: Exception) {
-                Log.w(TAG, "Retry $i sending FD: ${e.message}")
+                // Log.w(TAG, "Retry $i sending FD: ${e.message}") // Too noisy for UI
                 try { Thread.sleep(500) } catch (inter: InterruptedException) {}
             }
         }
@@ -200,7 +195,7 @@ class HysteriaService : VpnService() {
     private fun startHysteriaCore(serverIp: String, pass: String) {
         // Copy libuz -> hysteria
         val libuz = getExecutablePath("uz") // Akan cari libuz.so, simpan sebagai 'uz'
-        Log.d(TAG, "Starting 4 Hysteria Cores...")
+        logToUI("Starting 4 Hysteria Cores...")
 
         for (i in PORT_RANGES.indices) {
             val range = PORT_RANGES[i]
@@ -232,7 +227,7 @@ class HysteriaService : VpnService() {
 
     private fun startLoadBalancer() {
         val libload = getExecutablePath("load") // Cari libload.so -> load
-        Log.d(TAG, "Starting Load Balancer...")
+        logToUI("Starting Load Balancer...")
 
         val cmd = ArrayList<String>()
         cmd.add(libload)
@@ -263,16 +258,17 @@ class HysteriaService : VpnService() {
                 process.inputStream.bufferedReader().use { reader ->
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
-                        // Log ke Logcat (bisa difilter via TAG)
-                        // Jangan terlalu spam jika production
-                         if (name.contains("tun2socks")) Log.d(TAG, "[$name] $line")
+                         if (line != null && (line!!.contains("Error") || line!!.contains("Fail") || name.contains("tun2socks"))) {
+                             logToUI("[$name] $line")
+                         }
                     }
                 }
             }.start()
 
-            Log.d(TAG, "Binary $name started (PID: ${getPid(process)})")
+            logToUI("Binary $name started.")
 
         } catch (e: Exception) {
+            logToUI("Failed to start binary $name: ${e.message}")
             Log.e(TAG, "Failed to start binary $name", e)
             throw e
         }
