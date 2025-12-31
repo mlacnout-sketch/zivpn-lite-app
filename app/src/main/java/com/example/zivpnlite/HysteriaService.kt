@@ -246,13 +246,9 @@ class HysteriaService : VpnService() {
     
     // Helper untuk mengambil PID (hanya untuk debug/info, sejak Java 9 bisa process.pid())
     private fun getPid(p: Process): Long {
-        return try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                p.pid()
-            } else {
-                -1
-            }
-        } catch (e: Exception) { -1 }
+        // Hapus implementasi p.pid() karena menyebabkan error build jika target Java < 9
+        // Kita return -1 saja, tidak krusial.
+        return -1
     }
 
     // --- Helper Routing ---
