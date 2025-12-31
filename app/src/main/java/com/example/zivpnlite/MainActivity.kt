@@ -22,6 +22,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnConnect: Button
     private lateinit var btnStop: Button
     private lateinit var tvLog: TextView
+    private lateinit var scrollLog: android.widget.ScrollView
 
     private val logReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -41,6 +42,7 @@ class MainActivity : AppCompatActivity() {
         btnConnect = findViewById(R.id.btnConnect)
         btnStop = findViewById(R.id.btnStop)
         tvLog = findViewById(R.id.tvLog)
+        scrollLog = findViewById(R.id.scrollLog)
 
         // Set default values jika kosong (memudahkan testing)
         if (inputHost.text.isEmpty()) inputHost.setText("202.10.48.173")
@@ -84,6 +86,9 @@ class MainActivity : AppCompatActivity() {
         if (msg == null) return
         runOnUiThread {
             tvLog.append("$msg\n")
+            scrollLog.post {
+                scrollLog.fullScroll(View.FOCUS_DOWN)
+            }
         }
     }
 
